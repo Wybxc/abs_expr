@@ -23,7 +23,7 @@ enum ParsedExpr {
 }
 
 // Operator precedence levels (higher = tighter binding)
-const PREFIX_BP: u32 = 210;
+const HIGHEST_BP: u32 = 210;
 const JUXTAPOSITION_BP: u32 = 185;
 const MULTIPLICATIVE_BP: u32 = 170; // * / %
 const ADDITIVE_BP: u32 = 160; // + -
@@ -71,28 +71,6 @@ where
     }
 }
 
-/// Read a full operator (sequence of joint puncts) from the token stream.
-fn read_operator(tokens: &mut TokenIter) -> Option<String> {
-    let mut op = String::new();
-    match tokens.next()? {
-        TokenTree::Punct(p) => {
-            op.push(p.as_char());
-            let mut spacing = p.spacing();
-            while spacing == Spacing::Joint {
-                match tokens.next()? {
-                    TokenTree::Punct(next) => {
-                        op.push(next.as_char());
-                        spacing = next.spacing();
-                    }
-                    _ => return None,
-                }
-            }
-            Some(op)
-        }
-        _ => None,
-    }
-}
-
 /// Get left and right binding power for an infix operator.
 fn infix_bp(op: &str) -> Option<(u32, u32)> {
     let first = op.chars().next()?;
@@ -108,10 +86,33 @@ fn infix_bp(op: &str) -> Option<(u32, u32)> {
     }
 }
 
+/// Characters that can start an infix operator in the first-char rule.
+fn is_infix_char(c: char) -> bool {
+    matches!(
+        c,
+        '*' | '/'
+            | '%'
+            | '+'
+            | '-'
+            | ':'
+            | '@'
+            | '^'
+            | '='
+            | '<'
+            | '>'
+            | '|'
+            | '&'
+            | '$'
+            | '#'
+            | ','
+            | ';'
+    )
+}
+
 /// Get binding power for a prefix operator.
 fn prefix_bp(op: &str) -> Option<u32> {
     match op {
-        "!" | "?" | "~" | "-" | "-." | "--" => Some(PREFIX_BP),
+        "!" | "?" | "~" | "-" | "-." | "--" => Some(HIGHEST_BP),
         _ => None,
     }
 }
@@ -119,30 +120,22 @@ fn prefix_bp(op: &str) -> Option<u32> {
 /// Get binding power for a postfix operator.
 fn postfix_bp(op: &str) -> Option<u32> {
     match op {
-        "!" | "!!" => Some(PREFIX_BP),
+        "!" | "!!" => Some(HIGHEST_BP),
         _ => None,
     }
 }
 
-/// Check if the next token in the stream starts an expression
-/// (including prefix operators).
-fn peek_is_expr_start(tokens: &mut TokenIter) -> bool {
-    let mut clone = tokens.clone();
-    match clone.next() {
-        Some(TokenTree::Ident(_)) | Some(TokenTree::Literal(_)) => true,
-        Some(TokenTree::Group(g)) => g.delimiter() == Delimiter::Parenthesis,
-        Some(TokenTree::Punct(p)) => matches!(p.as_char(), '!' | '?' | '~' | '-'),
-        _ => false,
-    }
+/// Characters that can start a prefix operator.
+fn is_prefix_char(c: char) -> bool {
+    matches!(c, '!' | '?' | '~' | '-')
 }
 
-/// Check if the next token in the stream starts a primary expression
-/// (atom, literal, or parenthesized group) — excludes prefix operators.
-fn peek_is_primary_start(tokens: &mut TokenIter) -> bool {
-    let mut clone = tokens.clone();
-    match clone.next() {
+/// Check whether the next token starts an expression (including prefix ops).
+fn peek_is_expr_start(tokens: &mut TokenIter) -> bool {
+    match tokens.clone().next() {
         Some(TokenTree::Ident(_)) | Some(TokenTree::Literal(_)) => true,
         Some(TokenTree::Group(g)) => g.delimiter() == Delimiter::Parenthesis,
+        Some(TokenTree::Punct(p)) => is_prefix_char(p.as_char()),
         _ => false,
     }
 }
@@ -167,10 +160,8 @@ fn parse_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
 /// (before juxtaposition in the main loop).
 #[allow(clippy::result_large_err)]
 fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
-    // Prefix: try to read the longest matching prefix operator
     let mut expr = match try_read_longest_op(tokens, |op| prefix_bp(op).is_some()) {
         Some(op) => {
-            // Prefix RHS allows juxtaposition: -f x = -(f x)
             let rhs = parse_expr(tokens, JUXTAPOSITION_BP)?;
             ParsedExpr::Prefix {
                 op,
@@ -198,7 +189,11 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
 
     loop {
         // Juxtaposition: two adjacent primary expressions
-        if peek_is_primary_start(tokens) {
+        if tokens.clone().next().is_some_and(|tt| match tt {
+            TokenTree::Ident(_) | TokenTree::Literal(_) => true,
+            TokenTree::Group(g) => g.delimiter() == Delimiter::Parenthesis,
+            _ => false,
+        }) {
             if JUXTAPOSITION_BP < min_bp {
                 break;
             }
@@ -213,19 +208,22 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
             continue;
         }
 
-        // Quick peek to see if the next token is a Punct at all
-        if !matches!(tokens.clone().next(), Some(TokenTree::Punct(_))) {
+        // First-char filter: only infix operator characters enter the transaction
+        if !tokens
+            .clone()
+            .next()
+            .is_some_and(|tt| matches!(tt, TokenTree::Punct(p) if is_infix_char(p.as_char())))
+        {
             break;
         }
 
         // Try infix operator with transaction for backtracking
         let result = tokens.transaction(|t| -> Result<(String, ParsedExpr)> {
-            let op = read_operator(t).ok_or_else(Error::no_error)?;
+            let op =
+                try_read_longest_op(t, |op| infix_bp(op).is_some()).ok_or_else(Error::no_error)?;
 
-            if let Some((lbp, rbp)) = infix_bp(&op)
-                && lbp >= min_bp
-                && peek_is_expr_start(t)
-            {
+            let (lbp, rbp) = infix_bp(&op).unwrap();
+            if lbp >= min_bp && peek_is_expr_start(t) {
                 let rhs = parse_expr(t, rbp)?;
                 return Ok((op, rhs));
             }
@@ -352,7 +350,9 @@ pub fn abs_expr(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             cg.finalize(root).into()
         }
         Err(e) => {
-            panic!("Parse error: {}", e);
+            let msg = format!("Parse error: {}", e);
+            // Produce a compile_error!() token stream instead of panicking
+            quote! { compile_error!(#msg) }.into()
         }
     }
 }
