@@ -105,7 +105,7 @@ mod tests {
     // Right-associative: a ** b ** c → a ** (b ** c)
     #[test]
     fn right_assoc_exponentiation() {
-        let s = abs_expr_macros::abs_expr!(a * *b * *c);
+        let s = abs_expr_macros::abs_expr!(a**b**c);
         assert_eq!(
             s,
             "Infix { left: Atom(\"a\"), op: \"**\", right: Infix { left: Atom(\"b\"), op: \"**\", right: Atom(\"c\") } }"

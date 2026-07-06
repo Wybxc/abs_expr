@@ -17,6 +17,7 @@ use proc_macro2::{Delimiter, Spacing, TokenTree};
 use unsynn::*;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum Expr {
     Atom(String),
     Juxtaposition(Vec<Expr>),
@@ -141,6 +142,7 @@ fn peek_is_primary_start(tokens: &mut TokenIter) -> bool {
 }
 
 /// Parse a primary expression: identifier, literal, or parenthesized expression.
+#[allow(clippy::result_large_err)]
 fn parse_primary(tokens: &mut TokenIter) -> Result<Expr> {
     match tokens.next() {
         Some(TokenTree::Ident(ident)) => Ok(Expr::Atom(ident.to_string())),
@@ -154,6 +156,7 @@ fn parse_primary(tokens: &mut TokenIter) -> Result<Expr> {
 }
 
 /// Parse a prefix operator expression, or fall through to a primary expression.
+#[allow(clippy::result_large_err)]
 fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<Expr> {
     // Quick peek: only proceed if the first char is a prefix-operator character
     {
@@ -186,6 +189,7 @@ fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<Expr> {
 }
 
 /// Main expression parser using precedence climbing.
+#[allow(clippy::result_large_err)]
 fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<Expr> {
     let mut lhs = parse_prefix_or_primary(tokens)?;
 
@@ -219,18 +223,17 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<Expr> {
             let op = read_operator(t).ok_or_else(Error::no_error)?;
 
             // Try infix
-            if let Some((lbp, rbp)) = infix_bp(&op) {
-                if lbp >= min_bp && peek_is_expr_start(t) {
-                    let rhs = parse_expr(t, rbp)?;
-                    return Ok((true, op, rhs));
-                }
+            if let Some((lbp, rbp)) = infix_bp(&op)
+                && lbp >= min_bp
+                && peek_is_expr_start(t)
+            {
+                let rhs = parse_expr(t, rbp)?;
+                return Ok((true, op, rhs));
             }
 
             // Try postfix
-            if let Some(pbp) = postfix_bp(&op) {
-                if pbp >= min_bp {
-                    return Ok((false, op, Expr::Atom(String::new())));
-                }
+            if let Some(pbp) = postfix_bp(&op) && pbp >= min_bp {
+                return Ok((false, op, Expr::Atom(String::new())));
             }
 
             Err(Error::no_error())
