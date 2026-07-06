@@ -24,6 +24,7 @@ use unsynn::*;
 enum ParsedExpr {
     Atom(String),
     Juxtaposition(Vec<ParsedExpr>),
+    Grouped(Box<ParsedExpr>),
     Prefix {
         op: String,
         expr: Box<ParsedExpr>,
@@ -135,7 +136,8 @@ fn parse_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
         Some(TokenTree::Literal(lit)) => Ok(ParsedExpr::Atom(lit.to_string())),
         Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Parenthesis => {
             let mut inner = TokenIter::new(group.stream());
-            parse_expr(&mut inner, 0)
+            let expr = parse_expr(&mut inner, 0)?;
+            Ok(ParsedExpr::Grouped(Box::new(expr)))
         }
         _ => Error::unexpected_token(None, tokens),
     }
@@ -197,11 +199,9 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
         }
 
         // Quick peek to see if the next token is a Punct at all
-        {
-            let mut clone = tokens.clone();
-            if !matches!(clone.next(), Some(TokenTree::Punct(_))) {
-                break;
-            }
+        let mut clone = tokens.clone();
+        if !matches!(clone.next(), Some(TokenTree::Punct(_))) {
+            break;
         }
 
         // Try operator (infix or postfix) with transaction for backtracking
@@ -296,6 +296,7 @@ impl CodeGen {
                 });
                 name
             }
+            ParsedExpr::Grouped(inner) => self.emit(inner),
             ParsedExpr::Prefix { op, expr } => {
                 let child = self.emit(expr);
                 let name = self.next_ident();
