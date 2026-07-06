@@ -37,20 +37,18 @@ enum Expr {
 }
 
 // Operator precedence levels (higher = tighter binding)
+// Determined solely by the first character of the operator,
+// following OCaml conventions.
 const PREFIX_BP: u32 = 210;
-const EXPONENTIATION_BP: u32 = 195; // ** right
 const POSTFIX_BP: u32 = 190;
 const JUXTAPOSITION_BP: u32 = 185;
-const MULTIPLICATIVE_BP: u32 = 170; // * / % - left
-const ADDITIVE_BP: u32 = 160; // + - - left
-const CONS_BP: u32 = 150; // :: - right
-const CONCAT_BP: u32 = 140; // @ ^ - right
-const COMPARISON_BP: u32 = 130; // = < > | & $ # - left
-const CONJUNCTION_BP: u32 = 120; // & && - right
-const DISJUNCTION_BP: u32 = 110; // || - right
-const COMMA_BP: u32 = 100; // , - left
-const ASSIGNMENT_BP: u32 = 90; // <- := - right
-const SEMICOLON_BP: u32 = 80; // ; - right
+const MULTIPLICATIVE_BP: u32 = 170; // * / %
+const ADDITIVE_BP: u32 = 160;       // + -
+const CONS_BP: u32 = 150;          // :
+const CONCAT_BP: u32 = 140;        // @ ^
+const COMPARISON_BP: u32 = 130;    // = < > | & $ #
+const COMMA_BP: u32 = 100;        // ,
+const SEMICOLON_BP: u32 = 80;     // ;
 
 /// Read a full operator (sequence of joint puncts) from the token stream.
 fn read_operator(tokens: &mut TokenIter) -> Option<String> {
@@ -75,29 +73,21 @@ fn read_operator(tokens: &mut TokenIter) -> Option<String> {
 }
 
 /// Get left and right binding power for an infix operator.
+/// Precedence is determined solely by the first character of the operator.
+/// Returns `(left_bp, right_bp)` where left_bp ≠ right_bp means left-associative
+/// and left_bp == right_bp means right-associative.
 fn infix_bp(op: &str) -> Option<(u32, u32)> {
-    // Full-operator special cases that differ from the first-character rule
-    match op {
-        "**" | "**." => return Some((EXPONENTIATION_BP, EXPONENTIATION_BP)),
-        "<-" | ":=" => return Some((ASSIGNMENT_BP, ASSIGNMENT_BP)),
-        "||" => return Some((DISJUNCTION_BP, DISJUNCTION_BP)),
-        "&&" => return Some((CONJUNCTION_BP, CONJUNCTION_BP)),
-        ";" | ";;" => return Some((SEMICOLON_BP, SEMICOLON_BP)),
-        _ => {}
-    }
-
     let first = op.chars().next()?;
     match first {
-        '|' => Some((COMPARISON_BP, COMPARISON_BP + 1)),
-        '&' => Some((COMPARISON_BP, COMPARISON_BP + 1)),
-        '=' | '$' | '#' => Some((COMPARISON_BP, COMPARISON_BP + 1)),
-        '<' | '>' => Some((COMPARISON_BP, COMPARISON_BP + 1)),
+        '*' | '/' | '%' => Some((MULTIPLICATIVE_BP, MULTIPLICATIVE_BP + 1)),
+        '+' | '-' => Some((ADDITIVE_BP, ADDITIVE_BP + 1)),
         ':' => Some((CONS_BP, CONS_BP)),
         '@' | '^' => Some((CONCAT_BP, CONCAT_BP)),
-        '+' => Some((ADDITIVE_BP, ADDITIVE_BP + 1)),
-        '-' => Some((ADDITIVE_BP, ADDITIVE_BP + 1)),
-        '*' | '/' | '%' => Some((MULTIPLICATIVE_BP, MULTIPLICATIVE_BP + 1)),
+        '=' | '<' | '>' | '|' | '&' | '$' | '#' => {
+            Some((COMPARISON_BP, COMPARISON_BP + 1))
+        }
         ',' => Some((COMMA_BP, COMMA_BP + 1)),
+        ';' => Some((SEMICOLON_BP, SEMICOLON_BP)),
         _ => None,
     }
 }
