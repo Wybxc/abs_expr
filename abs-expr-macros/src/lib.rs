@@ -254,10 +254,6 @@ impl Parser for ParsedExpr {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Code generation: walk the ParsedExpr tree and emit const items
-// ---------------------------------------------------------------------------
-
 struct CodeGen {
     counter: u32,
     defs: Vec<TokenStream>,
@@ -337,7 +333,7 @@ impl CodeGen {
 
     fn finalize(self, root: Ident) -> TokenStream {
         let defs = self.defs;
-        quote! {{
+        quote! { const {
             #(#defs)*
             #root
         }}
