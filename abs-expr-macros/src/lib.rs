@@ -13,42 +13,43 @@ The precedence and associativity rules are the same as in OCaml.
 Refer to the OCaml documentation for more details: https://ocaml.org/manual/expr.html
 */
 
-use proc_macro2::{Delimiter, Spacing, TokenTree};
+use proc_macro2::{Delimiter, Ident, Spacing, TokenStream, TokenTree};
+use quote::quote;
 use unsynn::*;
 
+/// Heap-based parse tree produced by the parser.
+/// Distict from `abs_expr::Expr<'a>` (the public reference-based type).
 #[derive(Debug)]
-#[allow(dead_code)]
-enum Expr {
+// #[allow(dead_code)]
+enum ParsedExpr {
     Atom(String),
-    Juxtaposition(Vec<Expr>),
+    Juxtaposition(Vec<ParsedExpr>),
     Prefix {
         op: String,
-        expr: Box<Expr>,
+        expr: Box<ParsedExpr>,
     },
     Postfix {
-        expr: Box<Expr>,
+        expr: Box<ParsedExpr>,
         op: String,
     },
     Infix {
-        left: Box<Expr>,
+        left: Box<ParsedExpr>,
         op: String,
-        right: Box<Expr>,
+        right: Box<ParsedExpr>,
     },
 }
 
 // Operator precedence levels (higher = tighter binding)
-// Determined solely by the first character of the operator,
-// following OCaml conventions.
 const PREFIX_BP: u32 = 210;
 const POSTFIX_BP: u32 = 190;
 const JUXTAPOSITION_BP: u32 = 185;
 const MULTIPLICATIVE_BP: u32 = 170; // * / %
-const ADDITIVE_BP: u32 = 160;       // + -
-const CONS_BP: u32 = 150;          // :
-const CONCAT_BP: u32 = 140;        // @ ^
-const COMPARISON_BP: u32 = 130;    // = < > | & $ #
-const COMMA_BP: u32 = 100;        // ,
-const SEMICOLON_BP: u32 = 80;     // ;
+const ADDITIVE_BP: u32 = 160; // + -
+const CONS_BP: u32 = 150; // :
+const CONCAT_BP: u32 = 140; // @ ^
+const COMPARISON_BP: u32 = 130; // = < > | & $ #
+const COMMA_BP: u32 = 100; // ,
+const SEMICOLON_BP: u32 = 80; // ;
 
 /// Read a full operator (sequence of joint puncts) from the token stream.
 fn read_operator(tokens: &mut TokenIter) -> Option<String> {
@@ -73,9 +74,6 @@ fn read_operator(tokens: &mut TokenIter) -> Option<String> {
 }
 
 /// Get left and right binding power for an infix operator.
-/// Precedence is determined solely by the first character of the operator.
-/// Returns `(left_bp, right_bp)` where left_bp ≠ right_bp means left-associative
-/// and left_bp == right_bp means right-associative.
 fn infix_bp(op: &str) -> Option<(u32, u32)> {
     let first = op.chars().next()?;
     match first {
@@ -83,9 +81,7 @@ fn infix_bp(op: &str) -> Option<(u32, u32)> {
         '+' | '-' => Some((ADDITIVE_BP, ADDITIVE_BP + 1)),
         ':' => Some((CONS_BP, CONS_BP)),
         '@' | '^' => Some((CONCAT_BP, CONCAT_BP)),
-        '=' | '<' | '>' | '|' | '&' | '$' | '#' => {
-            Some((COMPARISON_BP, COMPARISON_BP + 1))
-        }
+        '=' | '<' | '>' | '|' | '&' | '$' | '#' => Some((COMPARISON_BP, COMPARISON_BP + 1)),
         ',' => Some((COMMA_BP, COMMA_BP + 1)),
         ';' => Some((SEMICOLON_BP, SEMICOLON_BP)),
         _ => None,
@@ -133,10 +129,10 @@ fn peek_is_primary_start(tokens: &mut TokenIter) -> bool {
 
 /// Parse a primary expression: identifier, literal, or parenthesized expression.
 #[allow(clippy::result_large_err)]
-fn parse_primary(tokens: &mut TokenIter) -> Result<Expr> {
+fn parse_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
     match tokens.next() {
-        Some(TokenTree::Ident(ident)) => Ok(Expr::Atom(ident.to_string())),
-        Some(TokenTree::Literal(lit)) => Ok(Expr::Atom(lit.to_string())),
+        Some(TokenTree::Ident(ident)) => Ok(ParsedExpr::Atom(ident.to_string())),
+        Some(TokenTree::Literal(lit)) => Ok(ParsedExpr::Atom(lit.to_string())),
         Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Parenthesis => {
             let mut inner = TokenIter::new(group.stream());
             parse_expr(&mut inner, 0)
@@ -147,7 +143,7 @@ fn parse_primary(tokens: &mut TokenIter) -> Result<Expr> {
 
 /// Parse a prefix operator expression, or fall through to a primary expression.
 #[allow(clippy::result_large_err)]
-fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<Expr> {
+fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
     // Quick peek: only proceed if the first char is a prefix-operator character
     {
         let mut clone = tokens.clone();
@@ -169,7 +165,7 @@ fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<Expr> {
     match result {
         Ok(op) => {
             let expr = parse_expr(tokens, PREFIX_BP - 1)?;
-            Ok(Expr::Prefix {
+            Ok(ParsedExpr::Prefix {
                 op,
                 expr: Box::new(expr),
             })
@@ -180,7 +176,7 @@ fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<Expr> {
 
 /// Main expression parser using precedence climbing.
 #[allow(clippy::result_large_err)]
-fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<Expr> {
+fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
     let mut lhs = parse_prefix_or_primary(tokens)?;
 
     loop {
@@ -191,11 +187,11 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<Expr> {
             }
             let rhs = parse_expr(tokens, JUXTAPOSITION_BP + 1)?;
             lhs = match lhs {
-                Expr::Juxtaposition(mut v) => {
+                ParsedExpr::Juxtaposition(mut v) => {
                     v.push(rhs);
-                    Expr::Juxtaposition(v)
+                    ParsedExpr::Juxtaposition(v)
                 }
-                _ => Expr::Juxtaposition(vec![lhs, rhs]),
+                _ => ParsedExpr::Juxtaposition(vec![lhs, rhs]),
             };
             continue;
         }
@@ -209,7 +205,7 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<Expr> {
         }
 
         // Try operator (infix or postfix) with transaction for backtracking
-        let result = tokens.transaction(|t| -> Result<(bool, String, Expr)> {
+        let result = tokens.transaction(|t| -> Result<(bool, String, ParsedExpr)> {
             let op = read_operator(t).ok_or_else(Error::no_error)?;
 
             // Try infix
@@ -222,8 +218,10 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<Expr> {
             }
 
             // Try postfix
-            if let Some(pbp) = postfix_bp(&op) && pbp >= min_bp {
-                return Ok((false, op, Expr::Atom(String::new())));
+            if let Some(pbp) = postfix_bp(&op)
+                && pbp >= min_bp
+            {
+                return Ok((false, op, ParsedExpr::Atom(String::new())));
             }
 
             Err(Error::no_error())
@@ -231,14 +229,14 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<Expr> {
 
         match result {
             Ok((true, op, rhs)) => {
-                lhs = Expr::Infix {
+                lhs = ParsedExpr::Infix {
                     left: Box::new(lhs),
                     op,
                     right: Box::new(rhs),
                 };
             }
             Ok((false, op, _)) => {
-                lhs = Expr::Postfix {
+                lhs = ParsedExpr::Postfix {
                     expr: Box::new(lhs),
                     op,
                 };
@@ -250,9 +248,98 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<Expr> {
     Ok(lhs)
 }
 
-impl Parser for Expr {
+impl Parser for ParsedExpr {
     fn parser(tokens: &mut TokenIter) -> Result<Self> {
         parse_expr(tokens, 0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Code generation: walk the ParsedExpr tree and emit const items
+// ---------------------------------------------------------------------------
+
+struct CodeGen {
+    counter: u32,
+    defs: Vec<TokenStream>,
+}
+
+impl CodeGen {
+    fn new() -> Self {
+        Self {
+            counter: 0,
+            defs: Vec::new(),
+        }
+    }
+
+    fn next_ident(&mut self) -> Ident {
+        let id = self.counter;
+        self.counter += 1;
+        Ident::new(&format!("__N{}", id), proc_macro2::Span::call_site())
+    }
+
+    fn emit(&mut self, expr: &ParsedExpr) -> Ident {
+        match expr {
+            ParsedExpr::Atom(s) => {
+                let name = self.next_ident();
+                self.defs.push(quote! {
+                    const #name: ::abs_expr::Expr<'static> = ::abs_expr::Expr::Atom(#s);
+                });
+                name
+            }
+            ParsedExpr::Juxtaposition(children) => {
+                let child_names: Vec<_> = children.iter().map(|c| self.emit(c)).collect();
+                let name = self.next_ident();
+                self.defs.push(quote! {
+                    const #name: ::abs_expr::Expr<'static> = ::abs_expr::Expr::Juxtaposition(
+                        &[#(#child_names),*]
+                    );
+                });
+                name
+            }
+            ParsedExpr::Prefix { op, expr } => {
+                let child = self.emit(expr);
+                let name = self.next_ident();
+                self.defs.push(quote! {
+                    const #name: ::abs_expr::Expr<'static> = ::abs_expr::Expr::Prefix {
+                        op: #op,
+                        expr: &#child,
+                    };
+                });
+                name
+            }
+            ParsedExpr::Postfix { expr, op } => {
+                let child = self.emit(expr);
+                let name = self.next_ident();
+                self.defs.push(quote! {
+                    const #name: ::abs_expr::Expr<'static> = ::abs_expr::Expr::Postfix {
+                        expr: &#child,
+                        op: #op,
+                    };
+                });
+                name
+            }
+            ParsedExpr::Infix { left, op, right } => {
+                let left_name = self.emit(left);
+                let right_name = self.emit(right);
+                let name = self.next_ident();
+                self.defs.push(quote! {
+                    const #name: ::abs_expr::Expr<'static> = ::abs_expr::Expr::Infix {
+                        left: &#left_name,
+                        op: #op,
+                        right: &#right_name,
+                    };
+                });
+                name
+            }
+        }
+    }
+
+    fn finalize(self, root: Ident) -> TokenStream {
+        let defs = self.defs;
+        quote! {{
+            #(#defs)*
+            #root
+        }}
     }
 }
 
@@ -261,13 +348,11 @@ pub fn abs_expr(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input: proc_macro2::TokenStream = input.into();
     let mut iter = TokenIter::new(input);
 
-    match (&mut iter).parse_all::<Expr>() {
+    match (&mut iter).parse_all::<ParsedExpr>() {
         Ok(expr) => {
-            let repr = format!("{:?}", expr);
-            let lit = proc_macro2::Literal::string(&repr);
-            let tt = proc_macro2::TokenTree::Literal(lit);
-            let ts = proc_macro2::TokenStream::from(tt);
-            proc_macro::TokenStream::from(ts)
+            let mut cg = CodeGen::new();
+            let root = cg.emit(&expr);
+            cg.finalize(root).into()
         }
         Err(e) => {
             panic!("Parse error: {}", e);
