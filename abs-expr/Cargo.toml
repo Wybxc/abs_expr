@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-abs-expr-macros = { path = "../abs-expr-macros" }
+abs-expr-macros = { path = "../abs-expr-macros", version = "0.1.0" }
