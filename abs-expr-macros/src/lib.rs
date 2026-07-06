@@ -147,12 +147,9 @@ fn parse_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
 #[allow(clippy::result_large_err)]
 fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
     // Quick peek: only proceed if the first char is a prefix-operator character
-    {
-        let mut clone = tokens.clone();
-        match clone.next() {
-            Some(TokenTree::Punct(p)) if matches!(p.as_char(), '!' | '?' | '~' | '-') => {}
-            _ => return parse_primary(tokens),
-        }
+    match tokens.clone().next() {
+        Some(TokenTree::Punct(p)) if matches!(p.as_char(), '!' | '?' | '~' | '-') => {}
+        _ => return parse_primary(tokens),
     }
 
     let result = tokens.transaction(|t| -> Result<String> {
@@ -199,8 +196,7 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
         }
 
         // Quick peek to see if the next token is a Punct at all
-        let mut clone = tokens.clone();
-        if !matches!(clone.next(), Some(TokenTree::Punct(_))) {
+        if !matches!(tokens.clone().next(), Some(TokenTree::Punct(_))) {
             break;
         }
 
