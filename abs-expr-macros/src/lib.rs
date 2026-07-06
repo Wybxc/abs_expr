@@ -1,26 +1,8 @@
-/*
-Expr syntax:
-Atom: an identifier or a literal
-Juxtaposition: a sequence of expressions, e.g. `a b (c+d)`
-Prefix: an operator followed by an expression, e.g. `-a`
-Postfix: an expression followed by an operator, e.g. `a!`
-Infix: an expression followed by an operator and another expression, e.g. `a + b`
-Expressions can be nested with parentheses, e.g. `(a + b) * c`.
-An operator can be any sequence of symbols, e.g. `+`, `++`, `->`, `::`, etc.
-The precedence and associativity of operators are determined by the first character of the operator,
-e.g. `+` and `-` have the same precedence and are left-associative, while `*` and `/` have higher precedence and are also left-associative.
-The precedence and associativity rules are the same as in OCaml.
-Refer to the OCaml documentation for more details: https://ocaml.org/manual/expr.html
-*/
-
 use proc_macro2::{Delimiter, Ident, Spacing, TokenStream, TokenTree};
 use quote::quote;
 use unsynn::*;
 
-/// Heap-based parse tree produced by the parser.
-/// Distict from `abs_expr::Expr<'a>` (the public reference-based type).
 #[derive(Debug)]
-// #[allow(dead_code)]
 enum ParsedExpr {
     Atom(String),
     Juxtaposition(Vec<ParsedExpr>),
@@ -41,6 +23,7 @@ enum ParsedExpr {
 }
 
 // Operator precedence levels (higher = tighter binding)
+const PREFIX_BP: u32 = 210;
 const JUXTAPOSITION_BP: u32 = 185;
 const MULTIPLICATIVE_BP: u32 = 170; // * / %
 const ADDITIVE_BP: u32 = 160; // + -
@@ -49,8 +32,6 @@ const CONCAT_BP: u32 = 140; // @ ^
 const COMPARISON_BP: u32 = 130; // = < > | & $ #
 const COMMA_BP: u32 = 100; // ,
 const SEMICOLON_BP: u32 = 80; // ;
-
-const PREFIX_BP: u32 = 210;
 
 /// Read Joint Puncts incrementally, returning the longest operator string
 /// that satisfies `is_valid`. On success, tokens are positioned after the
@@ -223,9 +204,7 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
             }
             let rhs = parse_expr(tokens, JUXTAPOSITION_BP + 1)?;
             lhs = match lhs {
-                ParsedExpr::Juxtaposition(mut v)
-                    if !matches!(rhs, ParsedExpr::Postfix { .. }) =>
-                {
+                ParsedExpr::Juxtaposition(mut v) if !matches!(rhs, ParsedExpr::Postfix { .. }) => {
                     v.push(rhs);
                     ParsedExpr::Juxtaposition(v)
                 }
