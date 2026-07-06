@@ -2,6 +2,9 @@
 name = "abs-expr"
 version = "0.1.0"
 edition = "2024"
+description = "A heap-allocation-free expression tree for statically generated DSL expressions"
+license = "Apache-2.0"
+repository = "https://github.com/Wybxc/abs_expr"
 
 [dependencies]
 abs-expr-macros = { path = "../abs-expr-macros", version = "0.1.0" }
