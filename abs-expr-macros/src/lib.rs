@@ -41,8 +41,6 @@ enum ParsedExpr {
 }
 
 // Operator precedence levels (higher = tighter binding)
-const PREFIX_BP: u32 = 210;
-const POSTFIX_BP: u32 = 190;
 const JUXTAPOSITION_BP: u32 = 185;
 const MULTIPLICATIVE_BP: u32 = 170; // * / %
 const ADDITIVE_BP: u32 = 160; // + -
@@ -51,6 +49,46 @@ const CONCAT_BP: u32 = 140; // @ ^
 const COMPARISON_BP: u32 = 130; // = < > | & $ #
 const COMMA_BP: u32 = 100; // ,
 const SEMICOLON_BP: u32 = 80; // ;
+
+const PREFIX_BP: u32 = 210;
+
+/// Read Joint Puncts incrementally, returning the longest operator string
+/// that satisfies `is_valid`. On success, tokens are positioned after the
+/// matched operator. On failure, tokens are restored to their original position.
+fn try_read_longest_op<F>(tokens: &mut TokenIter, is_valid: F) -> Option<String>
+where
+    F: Fn(&str) -> bool,
+{
+    let snapshot = tokens.clone();
+    let mut op = String::new();
+    let mut best: Option<(String, TokenIter)> = None;
+
+    while let Some(token) = tokens.next() {
+        match token {
+            TokenTree::Punct(p) => {
+                op.push(p.as_char());
+                if is_valid(&op) {
+                    best = Some((op.clone(), tokens.clone()));
+                }
+                if p.spacing() != Spacing::Joint {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+
+    match best {
+        Some((matched_op, pos)) => {
+            *tokens = pos;
+            Some(matched_op)
+        }
+        None => {
+            *tokens = snapshot;
+            None
+        }
+    }
+}
 
 /// Read a full operator (sequence of joint puncts) from the token stream.
 fn read_operator(tokens: &mut TokenIter) -> Option<String> {
@@ -92,7 +130,7 @@ fn infix_bp(op: &str) -> Option<(u32, u32)> {
 /// Get binding power for a prefix operator.
 fn prefix_bp(op: &str) -> Option<u32> {
     match op {
-        "!" | "?" | "~" | "-" | "-." => Some(PREFIX_BP),
+        "!" | "?" | "~" | "-" | "-." | "--" => Some(PREFIX_BP),
         _ => None,
     }
 }
@@ -100,7 +138,7 @@ fn prefix_bp(op: &str) -> Option<u32> {
 /// Get binding power for a postfix operator.
 fn postfix_bp(op: &str) -> Option<u32> {
     match op {
-        "!" => Some(POSTFIX_BP),
+        "!" | "!!" => Some(PREFIX_BP),
         _ => None,
     }
 }
@@ -144,33 +182,32 @@ fn parse_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
 }
 
 /// Parse a prefix operator expression, or fall through to a primary expression.
+/// After the expression, trailing postfix operators are consumed inline
+/// (before juxtaposition in the main loop).
 #[allow(clippy::result_large_err)]
 fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
-    // Quick peek: only proceed if the first char is a prefix-operator character
-    match tokens.clone().next() {
-        Some(TokenTree::Punct(p)) if matches!(p.as_char(), '!' | '?' | '~' | '-') => {}
-        _ => return parse_primary(tokens),
-    }
-
-    let result = tokens.transaction(|t| -> Result<String> {
-        let op = read_operator(t).ok_or_else(Error::no_error)?;
-        if prefix_bp(&op).is_some() {
-            Ok(op)
-        } else {
-            Err(Error::no_error())
-        }
-    });
-
-    match result {
-        Ok(op) => {
-            let expr = parse_expr(tokens, PREFIX_BP - 1)?;
-            Ok(ParsedExpr::Prefix {
+    // Prefix: try to read the longest matching prefix operator
+    let mut expr = match try_read_longest_op(tokens, |op| prefix_bp(op).is_some()) {
+        Some(op) => {
+            // Prefix RHS allows juxtaposition: -f x = -(f x)
+            let rhs = parse_expr(tokens, JUXTAPOSITION_BP)?;
+            ParsedExpr::Prefix {
                 op,
-                expr: Box::new(expr),
-            })
+                expr: Box::new(rhs),
+            }
         }
-        Err(_) => parse_primary(tokens),
+        None => parse_primary(tokens)?,
+    };
+
+    // Postfix: consume trailing postfix operators inline
+    while let Some(op) = try_read_longest_op(tokens, |op| postfix_bp(op).is_some()) {
+        expr = ParsedExpr::Postfix {
+            expr: Box::new(expr),
+            op,
+        };
     }
+
+    Ok(expr)
 }
 
 /// Main expression parser using precedence climbing.
@@ -186,7 +223,9 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
             }
             let rhs = parse_expr(tokens, JUXTAPOSITION_BP + 1)?;
             lhs = match lhs {
-                ParsedExpr::Juxtaposition(mut v) => {
+                ParsedExpr::Juxtaposition(mut v)
+                    if !matches!(rhs, ParsedExpr::Postfix { .. }) =>
+                {
                     v.push(rhs);
                     ParsedExpr::Juxtaposition(v)
                 }
@@ -200,41 +239,27 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
             break;
         }
 
-        // Try operator (infix or postfix) with transaction for backtracking
-        let result = tokens.transaction(|t| -> Result<(bool, String, ParsedExpr)> {
+        // Try infix operator with transaction for backtracking
+        let result = tokens.transaction(|t| -> Result<(String, ParsedExpr)> {
             let op = read_operator(t).ok_or_else(Error::no_error)?;
 
-            // Try infix
             if let Some((lbp, rbp)) = infix_bp(&op)
                 && lbp >= min_bp
                 && peek_is_expr_start(t)
             {
                 let rhs = parse_expr(t, rbp)?;
-                return Ok((true, op, rhs));
-            }
-
-            // Try postfix
-            if let Some(pbp) = postfix_bp(&op)
-                && pbp >= min_bp
-            {
-                return Ok((false, op, ParsedExpr::Atom(String::new())));
+                return Ok((op, rhs));
             }
 
             Err(Error::no_error())
         });
 
         match result {
-            Ok((true, op, rhs)) => {
+            Ok((op, rhs)) => {
                 lhs = ParsedExpr::Infix {
                     left: Box::new(lhs),
                     op,
                     right: Box::new(rhs),
-                };
-            }
-            Ok((false, op, _)) => {
-                lhs = ParsedExpr::Postfix {
-                    expr: Box::new(lhs),
-                    op,
                 };
             }
             Err(_) => break,
