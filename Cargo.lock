@@ -5,11 +5,15 @@ version = 4
 [[package]]
 name = "abs-expr"
 version = "0.1.0"
+dependencies = [
+ "abs-expr-macros",
+]
 
 [[package]]
 name = "abs-expr-macros"
 version = "0.1.0"
 dependencies = [
+ "proc-macro2",
  "unsynn",
 ]
 
