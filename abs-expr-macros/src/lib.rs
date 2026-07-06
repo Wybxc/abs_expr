@@ -1,14 +1,28 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+enum Expr {
+    Atom(String),
+    Juxtaposition(Vec<Expr>),
+    Prefix {
+        op: String,
+        expr: Box<Expr>,
+    },
+    Postfix {
+        expr: Box<Expr>,
+        op: String,
+    },
+    Infix {
+        left: Box<Expr>,
+        op: String,
+        right: Box<Expr>,
+    },
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+impl unsynn::Parser for Expr {
+    fn parser(tokens: &mut unsynn::TokenIter) -> unsynn::Result<Self> {
+        todo!()
     }
+}
+
+#[proc_macro]
+pub fn abs_expr(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    todo!()
 }
