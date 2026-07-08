@@ -1,5 +1,9 @@
 use abs_expr::{Expr, abs_expr};
 
+// ============================================================
+// Grammar: Primary — ident, literal, parenthesized
+// ============================================================
+
 #[test]
 fn atom_ident() {
     let x = Expr::Atom("x");
@@ -12,16 +16,105 @@ fn atom_literal() {
 }
 
 #[test]
+fn deep_nested_atom() {
+    let x = Expr::Atom("x");
+    assert_eq!(abs_expr!((x)), x);
+}
+
+// ============================================================
+// Grammar: Prefix — op + expr(RHS at JUXTAPOSITION_BP)
+// ============================================================
+
+#[test]
 fn prefix() {
     let x = Expr::Atom("x");
     assert_eq!(abs_expr!(-x), Expr::Prefix { op: "-", expr: &x });
 }
+
+// --x as a single multi-char prefix operator
+#[test]
+fn double_dash_prefix() {
+    let x = Expr::Atom("x");
+    assert_eq!(abs_expr!(--x), Expr::Prefix { op: "--", expr: &x });
+}
+
+// !- as a single Joint prefix operator
+#[test]
+fn double_prefix() {
+    let x = Expr::Atom("x");
+    assert_eq!(abs_expr!(!-x), Expr::Prefix { op: "!-", expr: &x });
+}
+
+// ~~ as a single Joint prefix operator
+#[test]
+fn double_tilde_prefix() {
+    let x = Expr::Atom("x");
+    assert_eq!(abs_expr!(~~x), Expr::Prefix { op: "~~", expr: &x });
+}
+
+// ++ as a single Joint prefix operator
+#[test]
+fn arbitrary_prefix() {
+    let x = Expr::Atom("x");
+    assert_eq!(abs_expr!(++x), Expr::Prefix { op: "++", expr: &x });
+}
+
+// Parens disambiguate nested prefix: -(-x)
+#[test]
+fn separate_prefix_ops_via_parens() {
+    let x = Expr::Atom("x");
+    let neg_x = Expr::Prefix { op: "-", expr: &x };
+    assert_eq!(
+        abs_expr!(-(-x)),
+        Expr::Prefix {
+            op: "-",
+            expr: &neg_x
+        }
+    );
+}
+
+// ============================================================
+// Grammar: Postfix — expr + op (consumed after infix attempt)
+// ============================================================
 
 #[test]
 fn postfix() {
     let x = Expr::Atom("x");
     assert_eq!(abs_expr!(x!), Expr::Postfix { expr: &x, op: "!" });
 }
+
+// x!! as a single multi-char Joint postfix operator
+#[test]
+fn double_bang_postfix() {
+    let x = Expr::Atom("x");
+    assert_eq!(abs_expr!(x!!), Expr::Postfix { expr: &x, op: "!!" });
+}
+
+// x! ! = (x!)! — space splits into two separate postfix ops
+#[test]
+fn chained_postfix_separate() {
+    let x = Expr::Atom("x");
+    let x_fact = Expr::Postfix { expr: &x, op: "!" };
+    assert_eq!(
+        abs_expr!(x! !),
+        Expr::Postfix {
+            expr: &x_fact,
+            op: "!"
+        }
+    );
+}
+
+#[test]
+fn arbitrary_postfix() {
+    let x = Expr::Atom("x");
+    assert_eq!(abs_expr!(x++), Expr::Postfix { expr: &x, op: "++" });
+    assert_eq!(abs_expr!(x--), Expr::Postfix { expr: &x, op: "--" });
+}
+
+// ============================================================
+// Grammar: Infix — expr op expr (precedence climbing)
+// ============================================================
+// --- Single-character infix operators ---
 
 #[test]
 fn infix_plus() {
@@ -51,70 +144,123 @@ fn infix_mul() {
     );
 }
 
-#[test]
-fn juxtaposition() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    assert_eq!(abs_expr!(a b), Expr::Juxtaposition(&[a, b]));
-}
+// --- Multi-character infix operators (Joint puncts, last-char precedence) ---
 
+// ::  ends with : → cons (150)
 #[test]
-fn parentheses() {
+fn compound_operator() {
     let a = Expr::Atom("a");
     let b = Expr::Atom("b");
-    let c = Expr::Atom("c");
-    let a_plus_b = Expr::Infix {
-        left: &a,
-        op: "+",
-        right: &b,
-    };
     assert_eq!(
-        abs_expr!((a + b) * c),
-        Expr::Infix {
-            left: &a_plus_b,
-            op: "*",
-            right: &c
-        }
-    );
-}
-
-#[test]
-fn precedence_mul_over_add() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    let c = Expr::Atom("c");
-    let b_mul_c = Expr::Infix {
-        left: &b,
-        op: "*",
-        right: &c,
-    };
-    assert_eq!(
-        abs_expr!(a + b * c),
+        abs_expr!(a::b),
         Expr::Infix {
             left: &a,
-            op: "+",
-            right: &b_mul_c
+            op: "::",
+            right: &b
         }
     );
 }
 
+// ->  ends with > → comparison (130)
 #[test]
-fn juxtaposition_over_infix() {
+fn arrow_operator() {
     let a = Expr::Atom("a");
     let b = Expr::Atom("b");
-    let c = Expr::Atom("c");
-    let d = Expr::Atom("d");
-    let ab = Expr::Juxtaposition(&[a, b]);
-    let cd = Expr::Juxtaposition(&[c, d]);
     assert_eq!(
-        abs_expr!(a b + c d),
+        abs_expr!(a -> b),
         Expr::Infix {
-            left: &ab,
-            op: "+",
-            right: &cd
+            left: &a,
+            op: "->",
+            right: &b
         }
     );
 }
+
+// =>  ends with > → comparison (130)
+#[test]
+fn fat_arrow() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    assert_eq!(
+        abs_expr!(a => b),
+        Expr::Infix {
+            left: &a,
+            op: "=>",
+            right: &b
+        }
+    );
+}
+
+// <>  ends with > → comparison (130)
+#[test]
+fn diamond_operator() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    assert_eq!(
+        abs_expr!(a <> b),
+        Expr::Infix {
+            left: &a,
+            op: "<>",
+            right: &b
+        }
+    );
+}
+
+// <<  ends with < → comparison (130)
+// >>  ends with > → comparison (130)
+#[test]
+fn shift_operators() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    assert_eq!(
+        abs_expr!(a << b),
+        Expr::Infix {
+            left: &a,
+            op: "<<",
+            right: &b
+        }
+    );
+    assert_eq!(
+        abs_expr!(a >> b),
+        Expr::Infix {
+            left: &a,
+            op: ">>",
+            right: &b
+        }
+    );
+}
+
+// ..  catch-all → comparison (130)
+#[test]
+fn range_operator() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    assert_eq!(
+        abs_expr!(a..b),
+        Expr::Infix {
+            left: &a,
+            op: "..",
+            right: &b
+        }
+    );
+}
+
+// ::: ends with : → cons (150)
+#[test]
+fn triple_colon_operator() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    assert_eq!(
+        abs_expr!(a ::: b),
+        Expr::Infix {
+            left: &a,
+            op: ":::",
+            right: &b
+        }
+    );
+}
+
+// --- Left associativity ---
 
 #[test]
 fn double_infix() {
@@ -132,34 +278,6 @@ fn double_infix() {
             left: &a_plus_b,
             op: "+",
             right: &c
-        }
-    );
-}
-
-#[test]
-fn compound_operator() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    assert_eq!(
-        abs_expr!(a::b),
-        Expr::Infix {
-            left: &a,
-            op: "::",
-            right: &b
-        }
-    );
-}
-
-#[test]
-fn arrow_operator() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    assert_eq!(
-        abs_expr!(a -> b),
-        Expr::Infix {
-            left: &a,
-            op: "->",
-            right: &b
         }
     );
 }
@@ -184,6 +302,72 @@ fn left_assoc_sub() {
     );
 }
 
+// --- Precedence (tight → loose) ---
+
+// * (170) > + (160)
+#[test]
+fn precedence_mul_over_add() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    let c = Expr::Atom("c");
+    let b_mul_c = Expr::Infix {
+        left: &b,
+        op: "*",
+        right: &c,
+    };
+    assert_eq!(
+        abs_expr!(a + b * c),
+        Expr::Infix {
+            left: &a,
+            op: "+",
+            right: &b_mul_c
+        }
+    );
+}
+
+// **  ends with * → multiplicative (170) > + (160)
+#[test]
+fn double_star_precedence() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    let c = Expr::Atom("c");
+    let b_dstar_c = Expr::Infix {
+        left: &b,
+        op: "**",
+        right: &c,
+    };
+    assert_eq!(
+        abs_expr!(a + b ** c),
+        Expr::Infix {
+            left: &a,
+            op: "+",
+            right: &b_dstar_c
+        }
+    );
+}
+
+// -> ends with > → comparison (130) < + (160)
+#[test]
+fn arrow_looser_than_plus() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    let c = Expr::Atom("c");
+    let a_plus_b = Expr::Infix {
+        left: &a,
+        op: "+",
+        right: &b,
+    };
+    assert_eq!(
+        abs_expr!(a + b -> c),
+        Expr::Infix {
+            left: &a_plus_b,
+            op: "->",
+            right: &c
+        }
+    );
+}
+
+// Full precedence: a + b * c - d / e = (a + (b * c)) - (d / e)
 #[test]
 fn mixed_precedence() {
     let a = Expr::Atom("a");
@@ -212,6 +396,71 @@ fn mixed_precedence() {
             left: &a_plus_b_mul_c,
             op: "-",
             right: &d_div_e
+        }
+    );
+}
+
+// Juxtaposition (185) > infix: a b + c d = (a b) + (c d)
+#[test]
+fn juxtaposition_over_infix() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    let c = Expr::Atom("c");
+    let d = Expr::Atom("d");
+    let ab = Expr::Juxtaposition(&[a, b]);
+    let cd = Expr::Juxtaposition(&[c, d]);
+    assert_eq!(
+        abs_expr!(a b + c d),
+        Expr::Infix {
+            left: &ab,
+            op: "+",
+            right: &cd
+        }
+    );
+}
+
+// ============================================================
+// Grammar: Juxtaposition — adjacent primary expressions
+// ============================================================
+
+#[test]
+fn juxtaposition() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    assert_eq!(abs_expr!(a b), Expr::Juxtaposition(&[a, b]));
+}
+
+#[test]
+fn chained_juxtaposition() {
+    let f = Expr::Atom("f");
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    let c = Expr::Atom("c");
+    let d = Expr::Atom("d");
+    assert_eq!(abs_expr!(f a b c d), Expr::Juxtaposition(&[f, a, b, c, d]));
+}
+
+// ============================================================
+// Parentheses: grouping, nesting, transparency
+// ============================================================
+
+// (a + b) * c  — parens override default precedence
+#[test]
+fn parentheses() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    let c = Expr::Atom("c");
+    let a_plus_b = Expr::Infix {
+        left: &a,
+        op: "+",
+        right: &b,
+    };
+    assert_eq!(
+        abs_expr!((a + b) * c),
+        Expr::Infix {
+            left: &a_plus_b,
+            op: "*",
+            right: &c
         }
     );
 }
@@ -263,69 +512,6 @@ fn parentheses_both_sides() {
 }
 
 #[test]
-fn parentheses_with_juxtaposition() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    let c = Expr::Atom("c");
-    let b_plus_c = Expr::Infix {
-        left: &b,
-        op: "+",
-        right: &c,
-    };
-    assert_eq!(abs_expr!(a(b + c)), Expr::Juxtaposition(&[a, b_plus_c]));
-}
-
-#[test]
-fn parentheses_with_prefix() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    let a_plus_b = Expr::Infix {
-        left: &a,
-        op: "+",
-        right: &b,
-    };
-    assert_eq!(
-        abs_expr!(-(a + b)),
-        Expr::Prefix {
-            op: "-",
-            expr: &a_plus_b
-        }
-    );
-}
-
-#[test]
-fn parentheses_with_postfix() {
-    let x = Expr::Atom("x");
-    assert_eq!(abs_expr!((x)!), Expr::Postfix { expr: &x, op: "!" });
-}
-
-#[test]
-fn deep_nested_atom() {
-    let x = Expr::Atom("x");
-    assert_eq!(abs_expr!((x)), x);
-}
-
-#[test]
-fn juxtaposition_of_grouped_expressions() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    let c = Expr::Atom("c");
-    let ab = Expr::Juxtaposition(&[a, b]);
-    // Parentheses preserve grouping: (a b) c ≠ a b c
-    assert_eq!(abs_expr!((a b) c), Expr::Juxtaposition(&[ab, c]));
-}
-
-#[test]
-fn chained_juxtaposition() {
-    let f = Expr::Atom("f");
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    let c = Expr::Atom("c");
-    let d = Expr::Atom("d");
-    assert_eq!(abs_expr!(f a b c d), Expr::Juxtaposition(&[f, a, b, c, d]));
-}
-
-#[test]
 fn complex_nested_parentheses() {
     let a = Expr::Atom("a");
     let b = Expr::Atom("b");
@@ -357,32 +543,57 @@ fn complex_nested_parentheses() {
     );
 }
 
-// ============================================================
-// Postfix binding tests
-// ============================================================
-
-// Postfix binds to the immediately preceding primary, BEFORE juxtaposition.
-// f x!  = f (x!)  — NOT (f x)!
+// Parens + juxtaposition: a (b + c) ≠ a b + c
 #[test]
-fn postfix_before_juxtaposition() {
-    let f = Expr::Atom("f");
-    let x = Expr::Atom("x");
-    let x_fact = Expr::Postfix { expr: &x, op: "!" };
-    assert_eq!(abs_expr!(f x!), Expr::Juxtaposition(&[f, x_fact]));
+fn parentheses_with_juxtaposition() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    let c = Expr::Atom("c");
+    let b_plus_c = Expr::Infix {
+        left: &b,
+        op: "+",
+        right: &c,
+    };
+    assert_eq!(abs_expr!(a(b + c)), Expr::Juxtaposition(&[a, b_plus_c]));
 }
 
-// Postfix after a juxtaposition chain: f g x! = ((f g) (x!))
+// (a b) c  — parens preserve inner juxtaposition grouping
 #[test]
-fn postfix_after_juxtaposition_chain() {
-    let f = Expr::Atom("f");
-    let g = Expr::Atom("g");
-    let x = Expr::Atom("x");
-    let fg = Expr::Juxtaposition(&[f, g]);
-    let x_fact = Expr::Postfix { expr: &x, op: "!" };
-    assert_eq!(abs_expr!(f g x!), Expr::Juxtaposition(&[fg, x_fact]));
+fn juxtaposition_of_grouped_expressions() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    let c = Expr::Atom("c");
+    let ab = Expr::Juxtaposition(&[a, b]);
+    assert_eq!(abs_expr!((a b) c), Expr::Juxtaposition(&[ab, c]));
 }
 
-// Parentheses force grouping before postfix: (f x)! ≠ f x!
+// -(a + b) — parens override prefix binding
+#[test]
+fn parentheses_with_prefix() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    let a_plus_b = Expr::Infix {
+        left: &a,
+        op: "+",
+        right: &b,
+    };
+    assert_eq!(
+        abs_expr!(-(a + b)),
+        Expr::Prefix {
+            op: "-",
+            expr: &a_plus_b
+        }
+    );
+}
+
+// (x)! — parens then postfix
+#[test]
+fn parentheses_with_postfix() {
+    let x = Expr::Atom("x");
+    assert_eq!(abs_expr!((x)!), Expr::Postfix { expr: &x, op: "!" });
+}
+
+// (f x)! — juxtaposition inside parens then postfix
 #[test]
 fn grouped_then_postfix() {
     let f = Expr::Atom("f");
@@ -391,27 +602,11 @@ fn grouped_then_postfix() {
     assert_eq!(abs_expr!((f x)!), Expr::Postfix { expr: &fx, op: "!" });
 }
 
-// f! g! = f ! (g!) — infix wins over postfix+juxtaposition
-#[test]
-fn both_postfix_in_juxtaposition() {
-    let f = Expr::Atom("f");
-    let g = Expr::Atom("g");
-    let g_fact = Expr::Postfix { expr: &g, op: "!" };
-    assert_eq!(
-        abs_expr!(f! g!),
-        Expr::Infix {
-            left: &f,
-            op: "!",
-            right: &g_fact
-        }
-    );
-}
-
 // ============================================================
-// Prefix + Juxtaposition interaction
+// Interactions: Prefix × Juxtaposition
+// Prefix RHS parsed at JUXTAPOSITION_BP, so -f x = -(f x)
 // ============================================================
 
-// Prefix RHS includes juxtaposition: -f x = -(f x)
 #[test]
 fn prefix_juxtaposes_in_rhs() {
     let f = Expr::Atom("f");
@@ -420,7 +615,6 @@ fn prefix_juxtaposes_in_rhs() {
     assert_eq!(abs_expr!(-f x), Expr::Prefix { op: "-", expr: &fx });
 }
 
-// Prefix RHS includes juxtaposition with postfix: -f x! = -(f (x!))
 #[test]
 fn prefix_with_postfix_in_rhs() {
     let f = Expr::Atom("f");
@@ -437,10 +631,81 @@ fn prefix_with_postfix_in_rhs() {
 }
 
 // ============================================================
-// Prefix + Postfix interaction
+// Interactions: Postfix × Juxtaposition
+// Postfix binds before juxtaposition: f x! = f (x!)
+// When op is both postfix and infix and a primary follows → infix wins
 // ============================================================
 
-// -x! = -(x!) — postfix binds first, then prefix
+#[test]
+fn postfix_before_juxtaposition() {
+    let f = Expr::Atom("f");
+    let x = Expr::Atom("x");
+    let x_fact = Expr::Postfix { expr: &x, op: "!" };
+    assert_eq!(abs_expr!(f x!), Expr::Juxtaposition(&[f, x_fact]));
+}
+
+#[test]
+fn postfix_after_juxtaposition_chain() {
+    let f = Expr::Atom("f");
+    let g = Expr::Atom("g");
+    let x = Expr::Atom("x");
+    let fg = Expr::Juxtaposition(&[f, g]);
+    let x_fact = Expr::Postfix { expr: &x, op: "!" };
+    assert_eq!(abs_expr!(f g x!), Expr::Juxtaposition(&[fg, x_fact]));
+}
+
+// x! y → infix wins over postfix+juxtaposition
+#[test]
+fn postfix_then_juxtaposition() {
+    let x = Expr::Atom("x");
+    let y = Expr::Atom("y");
+    assert_eq!(
+        abs_expr!(x! y),
+        Expr::Infix {
+            left: &x,
+            op: "!",
+            right: &y
+        }
+    );
+}
+
+// f! g! → infix wins over postfix+juxtaposition
+#[test]
+fn both_postfix_in_juxtaposition() {
+    let f = Expr::Atom("f");
+    let g = Expr::Atom("g");
+    let g_fact = Expr::Postfix { expr: &g, op: "!" };
+    assert_eq!(
+        abs_expr!(f! g!),
+        Expr::Infix {
+            left: &f,
+            op: "!",
+            right: &g_fact
+        }
+    );
+}
+
+// x! y! → infix wins over postfix+juxtaposition
+#[test]
+fn both_sides_postfix_in_juxtaposition() {
+    let x = Expr::Atom("x");
+    let y = Expr::Atom("y");
+    let y_fact = Expr::Postfix { expr: &y, op: "!" };
+    assert_eq!(
+        abs_expr!(x! y!),
+        Expr::Infix {
+            left: &x,
+            op: "!",
+            right: &y_fact
+        }
+    );
+}
+
+// ============================================================
+// Interactions: Prefix × Postfix
+// Postfix binds first, then prefix: -x! = -(x!)
+// ============================================================
+
 #[test]
 fn prefix_then_postfix() {
     let x = Expr::Atom("x");
@@ -454,28 +719,9 @@ fn prefix_then_postfix() {
     );
 }
 
-// !-x = !-x — `!-` is a single multi-char prefix operator (Joint puncts)
-#[test]
-fn double_prefix() {
-    let x = Expr::Atom("x");
-    assert_eq!(abs_expr!(!-x), Expr::Prefix { op: "!-", expr: &x });
-}
-
-#[test]
-fn separate_prefix_ops_via_parens() {
-    let x = Expr::Atom("x");
-    let neg_x = Expr::Prefix { op: "-", expr: &x };
-    assert_eq!(
-        abs_expr!(-(-x)),
-        Expr::Prefix {
-            op: "-",
-            expr: &neg_x
-        }
-    );
-}
-
 // ============================================================
-// Postfix + Infix interaction
+// Interactions: Postfix × Infix
+// Postfix binds before infix: x! + y = (x!) + y
 // ============================================================
 
 #[test]
@@ -509,66 +755,6 @@ fn postfix_then_infix_sub() {
 }
 
 // ============================================================
-// Postfix + Juxtaposition interaction
-// ============================================================
-
-// x! y = x ! y — when ! is both postfix and infix and a primary follows, infix wins
-#[test]
-fn postfix_then_juxtaposition() {
-    let x = Expr::Atom("x");
-    let y = Expr::Atom("y");
-    assert_eq!(
-        abs_expr!(x! y),
-        Expr::Infix {
-            left: &x,
-            op: "!",
-            right: &y
-        }
-    );
-}
-
-// x! y! = x ! (y!) — when ! is both postfix and infix and a primary follows, infix wins
-#[test]
-fn both_sides_postfix_in_juxtaposition() {
-    let x = Expr::Atom("x");
-    let y = Expr::Atom("y");
-    let y_fact = Expr::Postfix { expr: &y, op: "!" };
-    assert_eq!(
-        abs_expr!(x! y!),
-        Expr::Infix {
-            left: &x,
-            op: "!",
-            right: &y_fact
-        }
-    );
-}
-
-// ============================================================
-// Multi-char postfix operators
-// ============================================================
-
-// x!! = Postfix(x, "!!") — single multi-char operator
-#[test]
-fn double_bang_postfix() {
-    let x = Expr::Atom("x");
-    assert_eq!(abs_expr!(x!!), Expr::Postfix { expr: &x, op: "!!" });
-}
-
-// x! ! = (x!)! — two separate applications (space splits them)
-#[test]
-fn chained_postfix_separate() {
-    let x = Expr::Atom("x");
-    let x_fact = Expr::Postfix { expr: &x, op: "!" };
-    assert_eq!(
-        abs_expr!(x! !),
-        Expr::Postfix {
-            expr: &x_fact,
-            op: "!"
-        }
-    );
-}
-
-// ============================================================
 // Complex combinations
 // ============================================================
 
@@ -592,8 +778,7 @@ fn prefix_postfix_infix_combined() {
     );
 }
 
-// f x! + g y! * z
-// = ((f (x!)) + ((g (y!)) * z))
+// f x! + g y! * z = ((f (x!)) + ((g (y!)) * z))
 #[test]
 fn complex_postfix_infix_juxtaposition() {
     let f = Expr::Atom("f");
@@ -620,7 +805,7 @@ fn complex_postfix_infix_juxtaposition() {
     );
 }
 
-// (f x)! + y  — parentheses force grouping, different from f x! + y
+// (f x)! + y — parens force juxtaposition before postfix
 #[test]
 fn verify_parens_changes_meaning() {
     let f = Expr::Atom("f");
@@ -634,164 +819,6 @@ fn verify_parens_changes_meaning() {
             left: &fx_fact,
             op: "+",
             right: &y
-        }
-    );
-}
-
-// --x (single multi-char prefix operator)
-#[test]
-fn double_dash_prefix() {
-    let x = Expr::Atom("x");
-    assert_eq!(abs_expr!(--x), Expr::Prefix { op: "--", expr: &x });
-}
-
-// ============================================================
-// Multi-character operator tests (last-char precedence)
-// ============================================================
-
-// a => b — fat arrow (ends with > → comparison level)
-#[test]
-fn fat_arrow() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    assert_eq!(
-        abs_expr!(a => b),
-        Expr::Infix {
-            left: &a,
-            op: "=>",
-            right: &b
-        }
-    );
-}
-
-// a <> b — diamond operator (ends with > → comparison level)
-#[test]
-fn diamond_operator() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    assert_eq!(
-        abs_expr!(a <> b),
-        Expr::Infix {
-            left: &a,
-            op: "<>",
-            right: &b
-        }
-    );
-}
-
-// a << b, a >> b — shift-like operators
-#[test]
-fn shift_operators() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    assert_eq!(
-        abs_expr!(a << b),
-        Expr::Infix {
-            left: &a,
-            op: "<<",
-            right: &b
-        }
-    );
-    assert_eq!(
-        abs_expr!(a >> b),
-        Expr::Infix {
-            left: &a,
-            op: ">>",
-            right: &b
-        }
-    );
-}
-
-// a .. b — range operator (catch-all → comparison level)
-#[test]
-fn range_operator() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    assert_eq!(
-        abs_expr!(a..b),
-        Expr::Infix {
-            left: &a,
-            op: "..",
-            right: &b
-        }
-    );
-}
-
-// a ::: b — triple colon (ends with : → cons level)
-#[test]
-fn triple_colon_operator() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    assert_eq!(
-        abs_expr!(a ::: b),
-        Expr::Infix {
-            left: &a,
-            op: ":::",
-            right: &b
-        }
-    );
-}
-
-// - a + b -> c: arrow binds looser than addition (comparison < additive).
-//   a + b -> c = (a + b) -> c  — because + (160) binds tighter than -> (130)
-#[test]
-fn arrow_looser_than_plus() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    let c = Expr::Atom("c");
-    let a_plus_b = Expr::Infix {
-        left: &a,
-        op: "+",
-        right: &b,
-    };
-    assert_eq!(
-        abs_expr!(a + b -> c),
-        Expr::Infix {
-            left: &a_plus_b,
-            op: "->",
-            right: &c
-        }
-    );
-}
-
-// Verify that prefix/postfix still work with expanded operators
-#[test]
-fn arbitrary_prefix() {
-    let x = Expr::Atom("x");
-    assert_eq!(abs_expr!(++x), Expr::Prefix { op: "++", expr: &x });
-}
-
-// ~~x — `~~` is a single multi-char prefix operator (Joint `~` + `~`)
-#[test]
-fn double_tilde_prefix() {
-    let x = Expr::Atom("x");
-    assert_eq!(abs_expr!(~~x), Expr::Prefix { op: "~~", expr: &x });
-}
-
-#[test]
-fn arbitrary_postfix() {
-    let x = Expr::Atom("x");
-    assert_eq!(abs_expr!(x++), Expr::Postfix { expr: &x, op: "++" });
-    assert_eq!(abs_expr!(x--), Expr::Postfix { expr: &x, op: "--" });
-}
-
-// Multi-char operator precedence: ** binds tighter than +
-#[test]
-fn double_star_precedence() {
-    let a = Expr::Atom("a");
-    let b = Expr::Atom("b");
-    let c = Expr::Atom("c");
-    let b_dstar_c = Expr::Infix {
-        left: &b,
-        op: "**",
-        right: &c,
-    };
-    assert_eq!(
-        abs_expr!(a + b ** c),
-        Expr::Infix {
-            left: &a,
-            op: "+",
-            right: &b_dstar_c
         }
     );
 }
