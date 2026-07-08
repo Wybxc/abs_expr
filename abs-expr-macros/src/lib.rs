@@ -32,13 +32,10 @@ const COMPARISON_BP: u32 = 130; // = < > | & $ #
 const COMMA_BP: u32 = 100; // ,
 const SEMICOLON_BP: u32 = 80; // ;
 
-/// Read Joint Puncts incrementally, returning the longest operator string
-/// that satisfies `is_valid`. On success, tokens are positioned after the
-/// matched operator. On failure, tokens are restored to their original position.
-fn try_read_longest_op<F>(tokens: &mut TokenIter, is_valid: F) -> Option<String>
-where
-    F: Fn(&str) -> bool,
-{
+/// Read Joint Puncts incrementally, returning the longest operator string.
+/// On success, tokens are positioned after the matched operator.
+/// On failure (no Punct at all), tokens are restored to their original position.
+fn try_read_longest_op(tokens: &mut TokenIter) -> Option<String> {
     let snapshot = tokens.clone();
     let mut op = String::new();
     let mut best: Option<(String, TokenIter)> = None;
@@ -47,9 +44,7 @@ where
         match token {
             TokenTree::Punct(p) => {
                 op.push(p.as_char());
-                if is_valid(&op) {
-                    best = Some((op.clone(), tokens.clone()));
-                }
+                best = Some((op.clone(), tokens.clone()));
                 if p.spacing() != Spacing::Joint {
                     break;
                 }
@@ -103,17 +98,6 @@ fn peek_is_primary(tokens: &TokenIter) -> bool {
     }
 }
 
-/// Check whether the next token could start an expression
-/// (primary or prefix operator).
-fn peek_is_expr_start(tokens: &TokenIter) -> bool {
-    match tokens.clone().next() {
-        Some(TokenTree::Ident(_)) | Some(TokenTree::Literal(_)) => true,
-        Some(TokenTree::Group(g)) => g.delimiter() == Delimiter::Parenthesis,
-        Some(TokenTree::Punct(_)) => true,
-        _ => false,
-    }
-}
-
 /// Parse a primary expression: identifier, literal, or parenthesized expression.
 #[allow(clippy::result_large_err)]
 fn parse_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
@@ -129,16 +113,9 @@ fn parse_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
     }
 }
 
-/// Parse a prefix operator expression, or fall through to a primary expression.
-/// After the expression, trailing postfix operators are consumed inline
-/// (before juxtaposition in the main loop).
-///
-/// When a postfix operator could also be a valid infix operator and a
-/// primary expression follows, we prefer the infix interpretation
-/// (postfix+juxtaposition → infix).
 #[allow(clippy::result_large_err)]
-fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
-    let mut expr = match try_read_longest_op(tokens, |op| !op.is_empty()) {
+fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
+    let mut lhs = match try_read_longest_op(tokens) {
         Some(op) => {
             let rhs = parse_expr(tokens, JUXTAPOSITION_BP)?;
             ParsedExpr::Prefix {
@@ -148,32 +125,6 @@ fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
         }
         None => parse_primary(tokens)?,
     };
-
-    // Postfix: consume trailing postfix operators inline.
-    // If the operator is also a valid infix operator and a primary follows,
-    // roll back and let the main loop handle it as infix.
-    loop {
-        let before = tokens.clone();
-        let Some(op) = try_read_longest_op(tokens, |op| !op.is_empty()) else {
-            break;
-        };
-        if infix_bp(&op).is_some() && peek_is_primary(tokens) {
-            *tokens = before;
-            break;
-        }
-        expr = ParsedExpr::Postfix {
-            expr: Box::new(expr),
-            op,
-        };
-    }
-
-    Ok(expr)
-}
-
-/// Main expression parser using precedence climbing.
-#[allow(clippy::result_large_err)]
-fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
-    let mut lhs = parse_prefix_or_primary(tokens)?;
 
     loop {
         // Juxtaposition: two adjacent primary expressions
@@ -192,7 +143,7 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
             continue;
         }
 
-        // Any Punct could start an infix operator (Joint sequences form a single operator)
+        // Any Punct could be an operator (infix or postfix)
         if !tokens
             .clone()
             .next()
@@ -201,29 +152,49 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
             break;
         }
 
-        // Try infix operator with transaction for backtracking
-        let result = tokens.transaction(|t| -> Result<(String, ParsedExpr)> {
-            let op =
-                try_read_longest_op(t, |op| infix_bp(op).is_some()).ok_or_else(Error::no_error)?;
+        // Read the operator once. Save position before it for rollback.
+        let before = tokens.clone();
+        let Some(op) = try_read_longest_op(tokens) else {
+            break;
+        };
 
-            let (lbp, rbp) = infix_bp(&op).unwrap();
-            if lbp >= min_bp && peek_is_expr_start(t) {
-                let rhs = parse_expr(t, rbp)?;
-                return Ok((op, rhs));
+        // Try infix: the operator must have sufficient precedence and
+        // a primary expression must follow (not just any Punct — that
+        // would incorrectly consume the next infix operator as the RHS).
+        if let Some((lbp, rbp)) = infix_bp(&op)
+            && lbp >= min_bp
+            && peek_is_primary(tokens)
+        {
+            let result = tokens.transaction(|t| parse_expr(t, rbp));
+            match result {
+                Ok(rhs) => {
+                    lhs = ParsedExpr::Infix {
+                        left: Box::new(lhs),
+                        op,
+                        right: Box::new(rhs),
+                    };
+                    continue;
+                }
+                Err(_) => {
+                    // RHS parse failed. Restore and give up.
+                    *tokens = before;
+                    break;
+                }
+            }
+        } else {
+            // If the operator is a valid infix operator and a primary
+            // follows, an outer parse level (with lower min_bp) might
+            // handle it. Leave it in the stream.
+            if infix_bp(&op).is_some() && peek_is_primary(tokens) {
+                *tokens = before;
+                break;
             }
 
-            Err(Error::no_error())
-        });
-
-        match result {
-            Ok((op, rhs)) => {
-                lhs = ParsedExpr::Infix {
-                    left: Box::new(lhs),
-                    op,
-                    right: Box::new(rhs),
-                };
-            }
-            Err(_) => break,
+            // Otherwise, consume as postfix.
+            lhs = ParsedExpr::Postfix {
+                expr: Box::new(lhs),
+                op,
+            };
         }
     }
 
