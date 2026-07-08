@@ -112,16 +112,16 @@ fn parse_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
 
 #[allow(clippy::result_large_err)]
 fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
-    let before = tokens.clone();
-    let mut lhs = if let Some(op) = read_op(tokens) {
-        let rhs = parse_expr(tokens, JUXTAPOSITION_BP)?;
-        ParsedExpr::Prefix {
+    let mut lhs = match tokens.transaction(|t| -> Result<ParsedExpr> {
+        let op = read_op(t).ok_or_else(Error::no_error)?;
+        let rhs = parse_expr(t, JUXTAPOSITION_BP)?;
+        Ok(ParsedExpr::Prefix {
             op,
             expr: Box::new(rhs),
-        }
-    } else {
-        *tokens = before;
-        parse_primary(tokens)?
+        })
+    }) {
+        Ok(prefix) => prefix,
+        Err(_) => parse_primary(tokens)?,
     };
 
     loop {
@@ -132,7 +132,9 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
             }
             let rhs = parse_expr(tokens, JUXTAPOSITION_BP + 1)?;
             lhs = match lhs {
-                ParsedExpr::Juxtaposition(mut v) if !matches!(rhs, ParsedExpr::Postfix { .. }) => {
+                ParsedExpr::Juxtaposition(mut v)
+                    if !matches!(rhs, ParsedExpr::Postfix { .. }) =>
+                {
                     v.push(rhs);
                     ParsedExpr::Juxtaposition(v)
                 }
@@ -141,15 +143,23 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
             continue;
         }
 
-        let before = tokens.clone();
-        let Some(op) = read_op(tokens) else {
-            *tokens = before;
+        // Try to read an operator. Rolls back on no-Punct or
+        // "leave for outer" (infix operator at too-low precedence).
+        let Ok(op) = tokens.transaction(|t| -> Result<String> {
+            let op = read_op(t).ok_or_else(Error::no_error)?;
+            let bp = infix_bp(&op);
+            // A primary follows but lbp is too low — an outer parse
+            // level (with lower min_bp) might handle it.
+            if let Some((lbp, _)) = bp && lbp < min_bp && peek_is_primary(t) {
+                return Err(Error::no_error());
+            }
+            Ok(op)
+        }) else {
             break;
         };
 
-        let bp = infix_bp(&op);
-
         // Try infix: sufficient precedence and a primary expression follows.
+        let bp = infix_bp(&op);
         if let Some((lbp, rbp)) = bp
             && lbp >= min_bp
             && peek_is_primary(tokens)
@@ -163,21 +173,11 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
                     };
                     continue;
                 }
-                Err(_) => {
-                    // RHS parse failed. Restore and give up.
-                    *tokens = before;
-                    break;
-                }
+                Err(_) => break,
             }
         }
 
-        // If the operator is a valid infix and a primary follows,
-        // an outer parse level (with lower min_bp) will handle it.
-        // Otherwise, consume as postfix.
-        if bp.is_some() && peek_is_primary(tokens) {
-            *tokens = before;
-            break;
-        }
+        // Postfix
         lhs = ParsedExpr::Postfix {
             expr: Box::new(lhs),
             op,
