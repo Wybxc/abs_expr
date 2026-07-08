@@ -2,7 +2,7 @@ use proc_macro2::{Delimiter, Ident, Spacing, TokenStream, TokenTree};
 use quote::quote;
 use unsynn::*;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 enum ParsedExpr {
     Atom(String),
     Juxtaposition(Vec<ParsedExpr>),
@@ -132,9 +132,7 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
             }
             let rhs = parse_expr(tokens, JUXTAPOSITION_BP + 1)?;
             lhs = match lhs {
-                ParsedExpr::Juxtaposition(mut v)
-                    if !matches!(rhs, ParsedExpr::Postfix { .. }) =>
-                {
+                ParsedExpr::Juxtaposition(mut v) if !matches!(rhs, ParsedExpr::Postfix { .. }) => {
                     v.push(rhs);
                     ParsedExpr::Juxtaposition(v)
                 }
@@ -150,7 +148,10 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
             let bp = infix_bp(&op);
             // A primary follows but lbp is too low — an outer parse
             // level (with lower min_bp) might handle it.
-            if let Some((lbp, _)) = bp && lbp < min_bp && peek_is_primary(t) {
+            if let Some((lbp, _)) = bp
+                && lbp < min_bp
+                && peek_is_primary(t)
+            {
                 return Err(Error::no_error());
             }
             Ok(op)
@@ -294,6 +295,163 @@ pub fn abs_expr(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             let msg = format!("Parse error: {}", e);
             // Produce a compile_error!() token stream instead of panicking
             quote! { compile_error!(#msg) }.into()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // ── Unparser ────────────────────────────────────────────────
+    // Serialise a ParsedExpr back to a token-stream string.
+    // Uses conservative parenthesisation so the parse round-trips
+    // unambiguously.  The normaliser below strips the extra Grouped
+    // nodes that result.
+
+    fn unparse(expr: &ParsedExpr) -> String {
+        fn wrap(e: &ParsedExpr) -> String {
+            match e {
+                ParsedExpr::Atom(_) => unparse(e),
+                _ => format!("({})", unparse(e)),
+            }
+        }
+
+        match expr {
+            ParsedExpr::Atom(s) => s.clone(),
+            ParsedExpr::Grouped(inner) => format!("({})", unparse(inner)),
+            ParsedExpr::Prefix { op, expr } => format!("{} {}", op, wrap(expr)),
+            ParsedExpr::Postfix { expr, op } => format!("({}){}", wrap(expr), op),
+            ParsedExpr::Infix { left, op, right } => {
+                format!("{} {} {}", wrap(left), op, wrap(right))
+            }
+            ParsedExpr::Juxtaposition(children) => {
+                children.iter().map(wrap).collect::<Vec<_>>().join(" ")
+            }
+        }
+    }
+
+    /// Strip `Grouped` wrappers introduced by conservative
+    /// parenthesisation so round-tripped ASTs can be compared.
+    fn normalize(expr: ParsedExpr) -> ParsedExpr {
+        match expr {
+            ParsedExpr::Grouped(inner) => normalize(*inner),
+            ParsedExpr::Juxtaposition(children) => {
+                let n: Vec<_> = children.into_iter().map(normalize).collect();
+                if n.len() == 1 {
+                    n.into_iter().next().unwrap()
+                } else {
+                    ParsedExpr::Juxtaposition(n)
+                }
+            }
+            ParsedExpr::Prefix { op, expr } => ParsedExpr::Prefix {
+                op,
+                expr: Box::new(normalize(*expr)),
+            },
+            ParsedExpr::Postfix { expr, op } => ParsedExpr::Postfix {
+                expr: Box::new(normalize(*expr)),
+                op,
+            },
+            ParsedExpr::Infix { left, op, right } => ParsedExpr::Infix {
+                left: Box::new(normalize(*left)),
+                op,
+                right: Box::new(normalize(*right)),
+            },
+            other => other,
+        }
+    }
+
+    // ── Strategies ───────────────────────────────────────────────
+
+    fn arb_ident() -> impl Strategy<Value = String> {
+        "[a-z][a-z0-9_]*".prop_map(String::from)
+    }
+
+    fn arb_op_char() -> impl Strategy<Value = char> {
+        prop::sample::select(vec![
+            '+', '-', '*', '/', '%', ':', '@', '^', '=', '<', '>', '|', '&', '$', '#', '!', '?',
+            '~',
+        ])
+    }
+
+    fn arb_op() -> impl Strategy<Value = String> {
+        prop::collection::vec(arb_op_char(), 1..4)
+            .prop_map(|v| v.into_iter().collect())
+            .prop_filter("single punct", |op: &String| {
+                // No comment delimiters anywhere in the string
+                // (the lexer silently eats them before tokenization).
+                if op.contains("//") || op.contains("/*") {
+                    return false;
+                }
+                // Must lex as exactly one Punct token.
+                // Rejects multi-token sequences (.... → ... + .).
+                let tokens: Vec<_> = op
+                    .parse::<proc_macro2::TokenStream>()
+                    .ok()
+                    .map(|ts| ts.into_iter().collect())
+                    .unwrap_or_default();
+                tokens.len() == 1 && matches!(&tokens[0], proc_macro2::TokenTree::Punct(_))
+            })
+    }
+
+    fn arb_atom() -> impl Strategy<Value = ParsedExpr> {
+        arb_ident().prop_map(ParsedExpr::Atom)
+    }
+
+    fn arb_expr(depth: u32) -> impl Strategy<Value = ParsedExpr> {
+        if depth == 0 {
+            arb_atom().boxed()
+        } else {
+            let next = depth - 1;
+            prop_oneof![
+                arb_atom(),
+                (arb_op(), arb_expr(next)).prop_map(|(op, expr)| {
+                    ParsedExpr::Prefix {
+                        op,
+                        expr: Box::new(expr),
+                    }
+                }),
+                (arb_expr(next), arb_op()).prop_map(|(expr, op)| {
+                    ParsedExpr::Postfix {
+                        expr: Box::new(expr),
+                        op,
+                    }
+                }),
+                (arb_expr(next), arb_op(), arb_expr(next)).prop_map(|(l, op, r)| {
+                    ParsedExpr::Infix {
+                        left: Box::new(l),
+                        op,
+                        right: Box::new(r),
+                    }
+                }),
+                prop::collection::vec(arb_expr(next), 2..4).prop_map(ParsedExpr::Juxtaposition),
+                arb_expr(next).prop_map(|e| ParsedExpr::Grouped(Box::new(e))),
+            ]
+            .boxed()
+        }
+    }
+
+    // ── Round-trip property ─────────────────────────────────────
+
+    proptest! {
+        /// Any well-formed expression round-trips through
+        /// unparse → parse → normalize.
+        #[test]
+        fn round_trip(expr in arb_expr(4)) {
+            let source = unparse(&expr);
+            let reject = |why| Err(proptest::test_runner::TestCaseError::reject(why));
+
+            let ts = match source.parse::<proc_macro2::TokenStream>() {
+                Ok(ts) => ts,
+                Err(_) => return reject("lex error"),
+            };
+            let mut iter = TokenIter::new(ts);
+            let parsed = match parse_expr(&mut iter, 0) {
+                Ok(expr) => expr,
+                Err(_) => return reject("parse error"),
+            };
+            assert_eq!(normalize(parsed), normalize(expr));
         }
     }
 }
