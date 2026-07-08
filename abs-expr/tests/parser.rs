@@ -391,14 +391,20 @@ fn grouped_then_postfix() {
     assert_eq!(abs_expr!((f x)!), Expr::Postfix { expr: &fx, op: "!" });
 }
 
-// Both sides have postfix: f! g! = ((f!) (g!))
+// f! g! = f ! (g!) — infix wins over postfix+juxtaposition
 #[test]
 fn both_postfix_in_juxtaposition() {
     let f = Expr::Atom("f");
     let g = Expr::Atom("g");
-    let f_fact = Expr::Postfix { expr: &f, op: "!" };
     let g_fact = Expr::Postfix { expr: &g, op: "!" };
-    assert_eq!(abs_expr!(f! g!), Expr::Juxtaposition(&[f_fact, g_fact]));
+    assert_eq!(
+        abs_expr!(f! g!),
+        Expr::Infix {
+            left: &f,
+            op: "!",
+            right: &g_fact
+        }
+    );
 }
 
 // ============================================================
@@ -448,18 +454,11 @@ fn prefix_then_postfix() {
     );
 }
 
-// !-x = !(-x) — two prefix operators
+// !-x = !-x — `!-` is a single multi-char prefix operator (Joint puncts)
 #[test]
 fn double_prefix() {
     let x = Expr::Atom("x");
-    let neg_x = Expr::Prefix { op: "-", expr: &x };
-    assert_eq!(
-        abs_expr!(!-x),
-        Expr::Prefix {
-            op: "!",
-            expr: &neg_x
-        }
-    );
+    assert_eq!(abs_expr!(!-x), Expr::Prefix { op: "!-", expr: &x });
 }
 
 #[test]
@@ -513,21 +512,35 @@ fn postfix_then_infix_sub() {
 // Postfix + Juxtaposition interaction
 // ============================================================
 
+// x! y = x ! y — when ! is both postfix and infix and a primary follows, infix wins
 #[test]
 fn postfix_then_juxtaposition() {
     let x = Expr::Atom("x");
     let y = Expr::Atom("y");
-    let x_fact = Expr::Postfix { expr: &x, op: "!" };
-    assert_eq!(abs_expr!(x! y), Expr::Juxtaposition(&[x_fact, y]));
+    assert_eq!(
+        abs_expr!(x! y),
+        Expr::Infix {
+            left: &x,
+            op: "!",
+            right: &y
+        }
+    );
 }
 
+// x! y! = x ! (y!) — when ! is both postfix and infix and a primary follows, infix wins
 #[test]
 fn both_sides_postfix_in_juxtaposition() {
     let x = Expr::Atom("x");
     let y = Expr::Atom("y");
-    let x_fact = Expr::Postfix { expr: &x, op: "!" };
     let y_fact = Expr::Postfix { expr: &y, op: "!" };
-    assert_eq!(abs_expr!(x! y!), Expr::Juxtaposition(&[x_fact, y_fact]));
+    assert_eq!(
+        abs_expr!(x! y!),
+        Expr::Infix {
+            left: &x,
+            op: "!",
+            right: &y_fact
+        }
+    );
 }
 
 // ============================================================
@@ -695,7 +708,7 @@ fn range_operator() {
     let a = Expr::Atom("a");
     let b = Expr::Atom("b");
     assert_eq!(
-        abs_expr!(a .. b),
+        abs_expr!(a..b),
         Expr::Infix {
             left: &a,
             op: "..",
@@ -748,18 +761,11 @@ fn arbitrary_prefix() {
     assert_eq!(abs_expr!(++x), Expr::Prefix { op: "++", expr: &x });
 }
 
-// ~~x = ~(~x) — two nested prefix ops (~~ is not a single prefix op)
+// ~~x — `~~` is a single multi-char prefix operator (Joint `~` + `~`)
 #[test]
 fn double_tilde_prefix() {
     let x = Expr::Atom("x");
-    let tilde_x = Expr::Prefix { op: "~", expr: &x };
-    assert_eq!(
-        abs_expr!(~~x),
-        Expr::Prefix {
-            op: "~",
-            expr: &tilde_x
-        }
-    );
+    assert_eq!(abs_expr!(~~x), Expr::Prefix { op: "~~", expr: &x });
 }
 
 #[test]
@@ -781,7 +787,7 @@ fn double_star_precedence() {
         right: &c,
     };
     assert_eq!(
-        abs_expr!(a + b ** c),
+        abs_expr!(a + b * *c),
         Expr::Infix {
             left: &a,
             op: "+",

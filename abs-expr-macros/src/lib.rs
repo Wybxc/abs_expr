@@ -95,18 +95,28 @@ fn infix_bp(op: &str) -> Option<(u32, u32)> {
 }
 
 /// Get binding power for a prefix operator.
+///
+/// Any non-empty Joint-punct sequence is valid as prefix.
+/// Prefix is unambiguous because it only runs at expression boundaries
+/// (start of input, or after another operator).
 fn prefix_bp(op: &str) -> Option<u32> {
-    match op {
-        "!" | "?" | "~" | "-" | "-." | "--" | "++" => Some(HIGHEST_BP),
-        _ => None,
+    if op.is_empty() {
+        None
+    } else {
+        Some(HIGHEST_BP)
     }
 }
 
 /// Get binding power for a postfix operator.
+///
+/// Any non-empty Joint-punct sequence is valid as postfix.
+/// See [`parse_prefix_or_primary`] for the disambiguation rule
+/// between postfix an infix when both are possible.
 fn postfix_bp(op: &str) -> Option<u32> {
-    match op {
-        "!" | "!!" | "++" | "--" | "?" => Some(HIGHEST_BP),
-        _ => None,
+    if op.is_empty() {
+        None
+    } else {
+        Some(HIGHEST_BP)
     }
 }
 
@@ -135,9 +145,23 @@ fn parse_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
     }
 }
 
+/// Check whether the next token is a primary expression (not a prefix op).
+/// Used in the postfix loop to detect potential infix+juxtaposition.
+fn peek_is_primary(tokens: &mut TokenIter) -> bool {
+    match tokens.clone().next() {
+        Some(TokenTree::Ident(_)) | Some(TokenTree::Literal(_)) => true,
+        Some(TokenTree::Group(g)) => g.delimiter() == Delimiter::Parenthesis,
+        _ => false,
+    }
+}
+
 /// Parse a prefix operator expression, or fall through to a primary expression.
 /// After the expression, trailing postfix operators are consumed inline
 /// (before juxtaposition in the main loop).
+///
+/// When a postfix operator could also be a valid infix operator and a
+/// primary expression follows, we prefer the infix interpretation
+/// (postfix+juxtaposition → infix).
 #[allow(clippy::result_large_err)]
 fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
     let mut expr = match try_read_longest_op(tokens, |op| prefix_bp(op).is_some()) {
@@ -151,8 +175,18 @@ fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
         None => parse_primary(tokens)?,
     };
 
-    // Postfix: consume trailing postfix operators inline
-    while let Some(op) = try_read_longest_op(tokens, |op| postfix_bp(op).is_some()) {
+    // Postfix: consume trailing postfix operators inline.
+    // If the operator is also a valid infix operator and a primary follows,
+    // roll back and let the main loop handle it as infix.
+    loop {
+        let before = tokens.clone();
+        let Some(op) = try_read_longest_op(tokens, |op| postfix_bp(op).is_some()) else {
+            break;
+        };
+        if infix_bp(&op).is_some() && peek_is_primary(tokens) {
+            *tokens = before;
+            break;
+        }
         expr = ParsedExpr::Postfix {
             expr: Box::new(expr),
             op,
