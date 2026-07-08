@@ -23,7 +23,6 @@ enum ParsedExpr {
 }
 
 // Operator precedence levels (higher = tighter binding)
-const HIGHEST_BP: u32 = 210;
 const JUXTAPOSITION_BP: u32 = 185;
 const MULTIPLICATIVE_BP: u32 = 170; // * / %
 const ADDITIVE_BP: u32 = 160; // + -
@@ -94,34 +93,19 @@ fn infix_bp(op: &str) -> Option<(u32, u32)> {
     }
 }
 
-/// Get binding power for a prefix operator.
-///
-/// Any non-empty Joint-punct sequence is valid as prefix.
-/// Prefix is unambiguous because it only runs at expression boundaries
-/// (start of input, or after another operator).
-fn prefix_bp(op: &str) -> Option<u32> {
-    if op.is_empty() {
-        None
-    } else {
-        Some(HIGHEST_BP)
+/// Check whether the next token is a primary expression start
+/// (identifier, literal, or parenthesized group).
+fn peek_is_primary(tokens: &TokenIter) -> bool {
+    match tokens.clone().next() {
+        Some(TokenTree::Ident(_)) | Some(TokenTree::Literal(_)) => true,
+        Some(TokenTree::Group(g)) => g.delimiter() == Delimiter::Parenthesis,
+        _ => false,
     }
 }
 
-/// Get binding power for a postfix operator.
-///
-/// Any non-empty Joint-punct sequence is valid as postfix.
-/// See [`parse_prefix_or_primary`] for the disambiguation rule
-/// between postfix an infix when both are possible.
-fn postfix_bp(op: &str) -> Option<u32> {
-    if op.is_empty() {
-        None
-    } else {
-        Some(HIGHEST_BP)
-    }
-}
-
-/// Check whether the next token starts an expression (including prefix ops).
-fn peek_is_expr_start(tokens: &mut TokenIter) -> bool {
+/// Check whether the next token could start an expression
+/// (primary or prefix operator).
+fn peek_is_expr_start(tokens: &TokenIter) -> bool {
     match tokens.clone().next() {
         Some(TokenTree::Ident(_)) | Some(TokenTree::Literal(_)) => true,
         Some(TokenTree::Group(g)) => g.delimiter() == Delimiter::Parenthesis,
@@ -145,16 +129,6 @@ fn parse_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
     }
 }
 
-/// Check whether the next token is a primary expression (not a prefix op).
-/// Used in the postfix loop to detect potential infix+juxtaposition.
-fn peek_is_primary(tokens: &mut TokenIter) -> bool {
-    match tokens.clone().next() {
-        Some(TokenTree::Ident(_)) | Some(TokenTree::Literal(_)) => true,
-        Some(TokenTree::Group(g)) => g.delimiter() == Delimiter::Parenthesis,
-        _ => false,
-    }
-}
-
 /// Parse a prefix operator expression, or fall through to a primary expression.
 /// After the expression, trailing postfix operators are consumed inline
 /// (before juxtaposition in the main loop).
@@ -164,7 +138,7 @@ fn peek_is_primary(tokens: &mut TokenIter) -> bool {
 /// (postfix+juxtaposition → infix).
 #[allow(clippy::result_large_err)]
 fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
-    let mut expr = match try_read_longest_op(tokens, |op| prefix_bp(op).is_some()) {
+    let mut expr = match try_read_longest_op(tokens, |op| !op.is_empty()) {
         Some(op) => {
             let rhs = parse_expr(tokens, JUXTAPOSITION_BP)?;
             ParsedExpr::Prefix {
@@ -180,7 +154,7 @@ fn parse_prefix_or_primary(tokens: &mut TokenIter) -> Result<ParsedExpr> {
     // roll back and let the main loop handle it as infix.
     loop {
         let before = tokens.clone();
-        let Some(op) = try_read_longest_op(tokens, |op| postfix_bp(op).is_some()) else {
+        let Some(op) = try_read_longest_op(tokens, |op| !op.is_empty()) else {
             break;
         };
         if infix_bp(&op).is_some() && peek_is_primary(tokens) {
@@ -203,11 +177,7 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
 
     loop {
         // Juxtaposition: two adjacent primary expressions
-        if tokens.clone().next().is_some_and(|tt| match tt {
-            TokenTree::Ident(_) | TokenTree::Literal(_) => true,
-            TokenTree::Group(g) => g.delimiter() == Delimiter::Parenthesis,
-            _ => false,
-        }) {
+        if peek_is_primary(tokens) {
             if JUXTAPOSITION_BP < min_bp {
                 break;
             }

@@ -787,7 +787,7 @@ fn double_star_precedence() {
         right: &c,
     };
     assert_eq!(
-        abs_expr!(a + b * *c),
+        abs_expr!(a + b ** c),
         Expr::Infix {
             left: &a,
             op: "+",
