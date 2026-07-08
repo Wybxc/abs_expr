@@ -72,47 +72,32 @@ where
 }
 
 /// Get left and right binding power for an infix operator.
+///
+/// Precedence is determined by the **last** character of the operator.
+/// This makes `->` (last char `>`) a comparison-level operator rather than
+/// additive-level, which is more intuitive. Single-character operators
+/// are unaffected (first char == last char). Any unknown character
+/// receives comparison-level precedence as a catch-all default.
 fn infix_bp(op: &str) -> Option<(u32, u32)> {
-    let first = op.chars().next()?;
-    match first {
+    let c = op.chars().last()?;
+    match c {
         '*' | '/' | '%' => Some((MULTIPLICATIVE_BP, MULTIPLICATIVE_BP + 1)),
         '+' | '-' => Some((ADDITIVE_BP, ADDITIVE_BP + 1)),
         ':' => Some((CONS_BP, CONS_BP)),
         '@' | '^' => Some((CONCAT_BP, CONCAT_BP)),
-        '=' | '<' | '>' | '|' | '&' | '$' | '#' => Some((COMPARISON_BP, COMPARISON_BP + 1)),
+        '=' | '<' | '>' | '|' | '&' | '$' | '#' | '!' | '?' | '~' => {
+            Some((COMPARISON_BP, COMPARISON_BP + 1))
+        }
         ',' => Some((COMMA_BP, COMMA_BP + 1)),
         ';' => Some((SEMICOLON_BP, SEMICOLON_BP)),
-        _ => None,
+        _ => Some((COMPARISON_BP, COMPARISON_BP + 1)),
     }
-}
-
-/// Characters that can start an infix operator in the first-char rule.
-fn is_infix_char(c: char) -> bool {
-    matches!(
-        c,
-        '*' | '/'
-            | '%'
-            | '+'
-            | '-'
-            | ':'
-            | '@'
-            | '^'
-            | '='
-            | '<'
-            | '>'
-            | '|'
-            | '&'
-            | '$'
-            | '#'
-            | ','
-            | ';'
-    )
 }
 
 /// Get binding power for a prefix operator.
 fn prefix_bp(op: &str) -> Option<u32> {
     match op {
-        "!" | "?" | "~" | "-" | "-." | "--" => Some(HIGHEST_BP),
+        "!" | "?" | "~" | "-" | "-." | "--" | "++" => Some(HIGHEST_BP),
         _ => None,
     }
 }
@@ -120,14 +105,9 @@ fn prefix_bp(op: &str) -> Option<u32> {
 /// Get binding power for a postfix operator.
 fn postfix_bp(op: &str) -> Option<u32> {
     match op {
-        "!" | "!!" => Some(HIGHEST_BP),
+        "!" | "!!" | "++" | "--" | "?" => Some(HIGHEST_BP),
         _ => None,
     }
-}
-
-/// Characters that can start a prefix operator.
-fn is_prefix_char(c: char) -> bool {
-    matches!(c, '!' | '?' | '~' | '-')
 }
 
 /// Check whether the next token starts an expression (including prefix ops).
@@ -135,7 +115,7 @@ fn peek_is_expr_start(tokens: &mut TokenIter) -> bool {
     match tokens.clone().next() {
         Some(TokenTree::Ident(_)) | Some(TokenTree::Literal(_)) => true,
         Some(TokenTree::Group(g)) => g.delimiter() == Delimiter::Parenthesis,
-        Some(TokenTree::Punct(p)) => is_prefix_char(p.as_char()),
+        Some(TokenTree::Punct(_)) => true,
         _ => false,
     }
 }
@@ -208,11 +188,11 @@ fn parse_expr(tokens: &mut TokenIter, min_bp: u32) -> Result<ParsedExpr> {
             continue;
         }
 
-        // First-char filter: only infix operator characters enter the transaction
+        // Any Punct could start an infix operator (Joint sequences form a single operator)
         if !tokens
             .clone()
             .next()
-            .is_some_and(|tt| matches!(tt, TokenTree::Punct(p) if is_infix_char(p.as_char())))
+            .is_some_and(|tt| matches!(tt, TokenTree::Punct(_)))
         {
             break;
         }

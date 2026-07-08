@@ -631,3 +631,161 @@ fn double_dash_prefix() {
     let x = Expr::Atom("x");
     assert_eq!(abs_expr!(--x), Expr::Prefix { op: "--", expr: &x });
 }
+
+// ============================================================
+// Multi-character operator tests (last-char precedence)
+// ============================================================
+
+// a => b — fat arrow (ends with > → comparison level)
+#[test]
+fn fat_arrow() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    assert_eq!(
+        abs_expr!(a => b),
+        Expr::Infix {
+            left: &a,
+            op: "=>",
+            right: &b
+        }
+    );
+}
+
+// a <> b — diamond operator (ends with > → comparison level)
+#[test]
+fn diamond_operator() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    assert_eq!(
+        abs_expr!(a <> b),
+        Expr::Infix {
+            left: &a,
+            op: "<>",
+            right: &b
+        }
+    );
+}
+
+// a << b, a >> b — shift-like operators
+#[test]
+fn shift_operators() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    assert_eq!(
+        abs_expr!(a << b),
+        Expr::Infix {
+            left: &a,
+            op: "<<",
+            right: &b
+        }
+    );
+    assert_eq!(
+        abs_expr!(a >> b),
+        Expr::Infix {
+            left: &a,
+            op: ">>",
+            right: &b
+        }
+    );
+}
+
+// a .. b — range operator (catch-all → comparison level)
+#[test]
+fn range_operator() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    assert_eq!(
+        abs_expr!(a .. b),
+        Expr::Infix {
+            left: &a,
+            op: "..",
+            right: &b
+        }
+    );
+}
+
+// a ::: b — triple colon (ends with : → cons level)
+#[test]
+fn triple_colon_operator() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    assert_eq!(
+        abs_expr!(a ::: b),
+        Expr::Infix {
+            left: &a,
+            op: ":::",
+            right: &b
+        }
+    );
+}
+
+// - a + b -> c: arrow binds looser than addition (comparison < additive).
+//   a + b -> c = (a + b) -> c  — because + (160) binds tighter than -> (130)
+#[test]
+fn arrow_looser_than_plus() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    let c = Expr::Atom("c");
+    let a_plus_b = Expr::Infix {
+        left: &a,
+        op: "+",
+        right: &b,
+    };
+    assert_eq!(
+        abs_expr!(a + b -> c),
+        Expr::Infix {
+            left: &a_plus_b,
+            op: "->",
+            right: &c
+        }
+    );
+}
+
+// Verify that prefix/postfix still work with expanded operators
+#[test]
+fn arbitrary_prefix() {
+    let x = Expr::Atom("x");
+    assert_eq!(abs_expr!(++x), Expr::Prefix { op: "++", expr: &x });
+}
+
+// ~~x = ~(~x) — two nested prefix ops (~~ is not a single prefix op)
+#[test]
+fn double_tilde_prefix() {
+    let x = Expr::Atom("x");
+    let tilde_x = Expr::Prefix { op: "~", expr: &x };
+    assert_eq!(
+        abs_expr!(~~x),
+        Expr::Prefix {
+            op: "~",
+            expr: &tilde_x
+        }
+    );
+}
+
+#[test]
+fn arbitrary_postfix() {
+    let x = Expr::Atom("x");
+    assert_eq!(abs_expr!(x++), Expr::Postfix { expr: &x, op: "++" });
+    assert_eq!(abs_expr!(x--), Expr::Postfix { expr: &x, op: "--" });
+}
+
+// Multi-char operator precedence: ** binds tighter than +
+#[test]
+fn double_star_precedence() {
+    let a = Expr::Atom("a");
+    let b = Expr::Atom("b");
+    let c = Expr::Atom("c");
+    let b_dstar_c = Expr::Infix {
+        left: &b,
+        op: "**",
+        right: &c,
+    };
+    assert_eq!(
+        abs_expr!(a + b ** c),
+        Expr::Infix {
+            left: &a,
+            op: "+",
+            right: &b_dstar_c
+        }
+    );
+}
